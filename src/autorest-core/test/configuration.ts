@@ -1,6 +1,3 @@
-// polyfills for language support
-require("../lib/polyfill.min.js");
-
 import { suite, test, slow, timeout, skip, only } from "mocha-typescript";
 import * as assert from "assert";
 import { IFileSystem, MemoryFileSystem } from "../lib/file-system"
@@ -14,7 +11,7 @@ import * as AutoRest from "../lib/autorest-core"
     let f = new MemoryFileSystem(new Map<string, string>([
       ['readme.md', `
 # this is a test
- see https://aka.ms/autorest
+> see https://aka.ms/autorest
 ~~~ yaml
 my-value: $(sample-value)
 sample-value: one
@@ -84,5 +81,60 @@ csharp:
       assert.equal(each['output-folder'], "OUTPUT/csharp");
     }
 
+  }
+
+
+
+  @test async "Test Guards"() {
+    // test out subscribe
+
+    let f = new MemoryFileSystem(new Map<string, string>([
+      ['readme.md', `
+# this is a test
+> see https://aka.ms/autorest
+
+~~~ yaml $(foo)
+value: 
+ - foo
+~~~
+
+~~~ yaml $(foo) && $(bar)
+value: 
+  - foo_and_bar
+~~~
+
+~~~ yaml $(foo) && $(bar) === undefined
+value: 
+ - foo_and_not_bar
+~~~
+
+~~~ yaml $(bar)
+value: 
+ - bar
+~~~
+
+~~~ yaml !$(bar) 
+value: 
+ - not_bar
+~~~
+
+`],
+      ['other.md', `
+# My Doc.
+
+# some text
+
+`]]));
+
+    const autorest = new AutoRest.AutoRest(f, MemoryFileSystem.DefaultVirtualRootUri + "readme.md");
+    autorest.AddConfiguration({ foo: true });
+    let cfg = await autorest.view;
+
+    // output folder should be 'foo'
+    assert.deepEqual(cfg['value'], ["foo", 'foo_and_not_bar', 'not_bar']);
+
+    autorest.AddConfiguration({ bar: true });
+    cfg = await autorest.view;
+    assert.deepEqual(cfg['value'], ["foo", 'foo_and_bar', 'bar']);
   }
 }

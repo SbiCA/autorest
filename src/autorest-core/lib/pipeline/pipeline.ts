@@ -3,24 +3,30 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { FastStringify } from "../ref/yaml";
+import { GetPlugin_ComponentModifier } from './component-modifier';
+import { GetPlugin_SchemaValidator } from './schema-validation';
+import { ConvertJsonx2Yaml, ConvertYaml2Jsonx } from '../parsing/yaml';
+import { Descendants, FastStringify, StringifyAst } from '../ref/yaml';
 import { JsonPath, stringify } from "../ref/jsonpath";
 import { safeEval } from "../ref/safe-eval";
 import { LazyPromise } from "../lazy";
 import { OutstandingTaskAwaiter } from "../outstanding-task-awaiter";
-import { AutoRestPlugin } from "./plugin-endpoint";
+import { AutoRestExtension } from "./plugin-endpoint";
 import { Manipulator } from "./manipulation";
 import { ProcessCodeModel } from "./commonmark-documentation";
 import { Channel } from "../message";
-import { ClearFolder, ResolveUri } from "../ref/uri";
-import { ConfigurationView } from "../configuration";
-import { DataHandleRead, DataStoreView, DataStoreViewReadonly, QuickScope } from "../data-store/data-store";
-import { GetAutoRestDotNetPlugin } from "./plugins/autorest-dotnet";
-import { ComposeSwaggers, LoadLiterateSwaggers, LoadLiterateSwaggerOverrides } from "./swagger-loader";
+import { ResolveUri } from "../ref/uri";
+import { ConfigurationView, GetExtension } from '../configuration';
+import { DataHandle, DataSink, DataSource, QuickDataSource } from '../data-store/data-store';
 import { IFileSystem } from "../file-system";
 import { EmitArtifacts } from "./artifact-emitter";
+import { ComposeSwaggers, LoadLiterateSwaggerOverrides, LoadLiterateSwaggers } from './swagger-loader';
+import { ConvertOAI2toOAI3 } from "../openapi/conversion";
+import { Help } from '../../help';
+import { GetPlugin_Help } from "./help";
+import { GetPlugin_ReflectApiVersion } from "./metadata-generation";
+import { CreatePerFilePlugin, PipelinePlugin } from './common';
 
-export type PipelinePlugin = (config: ConfigurationView, input: DataStoreViewReadonly, working: DataStoreView, output: DataStoreView) => Promise<void>;
 interface PipelineNode {
   outputArtifact?: string;
   pluginName: string;
@@ -28,117 +34,148 @@ interface PipelineNode {
   inputs: string[];
 };
 
-function CreatePluginLoader(): PipelinePlugin {
-  return async (config, input, working, output) => {
+function GetPlugin_Identity(): PipelinePlugin {
+  return async (config, input) => input;
+}
+function GetPlugin_Loader(): PipelinePlugin {
+  return async (config, input, sink) => {
     let inputs = config.InputFileUris;
     const swaggers = await LoadLiterateSwaggers(
       config,
       input,
-      inputs, working);
+      inputs, sink);
+    const result: DataHandle[] = [];
     for (let i = 0; i < inputs.length; ++i) {
-      await (await output.Write(`./${i}/_` + encodeURIComponent(inputs[i]))).Forward(swaggers[i]);
+      result.push(await sink.Forward(inputs[i], swaggers[i]));
     }
+    return new QuickDataSource(result);
   };
 }
-function CreatePluginMdOverrideLoader(): PipelinePlugin {
-  return async (config, input, working, output) => {
+function GetPlugin_MdOverrideLoader(): PipelinePlugin {
+  return async (config, input, sink) => {
     let inputs = config.InputFileUris;
     const swaggers = await LoadLiterateSwaggerOverrides(
       config,
       input,
-      inputs, working);
+      inputs, sink);
+    const result: DataHandle[] = [];
     for (let i = 0; i < inputs.length; ++i) {
-      await (await output.Write(`./${i}/_` + encodeURIComponent(inputs[i]))).Forward(swaggers[i]);
+      result.push(await sink.Forward(inputs[i], swaggers[i]));
     }
+    return new QuickDataSource(result);
   };
 }
 
-function CreatePluginTransformer(): PipelinePlugin {
-  return async (config, input, working, output) => {
-    const documentIdResolver: (key: string) => string = key => {
-      const parts = key.split("/_");
-      return parts.length === 1 ? parts[0] : decodeURIComponent(parts[parts.length - 1]);
-    };
-    const manipulator = new Manipulator(config);
-    const files = await input.Enum();
-    for (let file of files) {
-      const fileIn = await input.ReadStrict(file);
-      file = file.substr(file.indexOf("/output/") + "/output/".length);
-      const fileOut = await manipulator.Process(fileIn, working, documentIdResolver(file));
-      await (await output.Write("./" + file)).Forward(fileOut);
-    }
-  };
+function GetPlugin_OAI2toOAIx(): PipelinePlugin {
+  return CreatePerFilePlugin(async config => async (fileIn, sink) => {
+    const fileOut = await ConvertOAI2toOAI3(fileIn, sink);
+    return await sink.Forward(fileIn.Description, fileOut);
+  });
 }
-function CreatePluginTransformerImmediate(): PipelinePlugin {
-  return async (config, input, working, output) => {
-    const documentIdResolver: (key: string) => string = key => {
-      const parts = key.split("/_");
-      return parts.length === 1 ? parts[0] : decodeURIComponent(parts[parts.length - 1]);
+function GetPlugin_Yaml2Jsonx(): PipelinePlugin {
+  return CreatePerFilePlugin(async config => async (fileIn, sink) => {
+    let ast = fileIn.ReadYamlAst();
+    ast = ConvertYaml2Jsonx(ast);
+    return await sink.WriteData(fileIn.Description, StringifyAst(ast));
+  });
+}
+function GetPlugin_Jsonx2Yaml(): PipelinePlugin {
+  return CreatePerFilePlugin(async config => async (fileIn, sink) => {
+    let ast = fileIn.ReadYamlAst();
+    ast = ConvertJsonx2Yaml(ast);
+    return await sink.WriteData(fileIn.Description, StringifyAst(ast));
+  });
+}
+
+function GetPlugin_Transformer(): PipelinePlugin {
+  return CreatePerFilePlugin(async config => {
+    const isObject = config.GetEntry("is-object" as any) === false ? false : true;
+    const manipulator = new Manipulator(config);
+    return async (fileIn, sink) => {
+      const fileOut = await manipulator.Process(fileIn, sink, isObject, fileIn.Description);
+      return await sink.Forward(fileIn.Description, fileOut);
     };
+  });
+}
+function GetPlugin_TransformerImmediate(): PipelinePlugin {
+  return async (config, input, sink) => {
+    const isObject = config.GetEntry("is-object" as any) === false ? false : true;
     const files = await input.Enum(); // first all the immediate-configs, then a single swagger-document
     const scopes = await Promise.all(files.slice(0, files.length - 1).map(f => input.ReadStrict(f)));
     const manipulator = new Manipulator(config.GetNestedConfigurationImmediate(...scopes.map(s => s.ReadObject<any>())));
     const file = files[files.length - 1];
     const fileIn = await input.ReadStrict(file);
-    const fileOut = await manipulator.Process(fileIn, working, documentIdResolver(file));
-    await (await output.Write("swagger-document")).Forward(fileOut);
+    const fileOut = await manipulator.Process(fileIn, sink, isObject, fileIn.Description);
+    return new QuickDataSource([await sink.Forward("swagger-document", fileOut)]);
   };
 }
-function CreatePluginComposer(): PipelinePlugin {
-  return async (config, input, working, output) => {
+function GetPlugin_Composer(): PipelinePlugin {
+  return async (config, input, sink) => {
     const swaggers = await Promise.all((await input.Enum()).map(x => input.ReadStrict(x)));
     const overrideInfo = config.GetEntry("override-info");
     const overrideTitle = (overrideInfo && overrideInfo.title) || config.GetEntry("title");
     const overrideDescription = (overrideInfo && overrideInfo.description) || config.GetEntry("description");
-    const swagger = await ComposeSwaggers(config, overrideTitle, overrideDescription, swaggers, config.DataStore.CreateScope("compose"));
-    await (await output.Write("composed")).Forward(swagger);
+    const swagger = await ComposeSwaggers(config, overrideTitle, overrideDescription, swaggers, sink);
+    return new QuickDataSource([await sink.Forward("composed", swagger)]);
   };
 }
-function CreatePluginExternal(host: PromiseLike<AutoRestPlugin>, pluginName: string): PipelinePlugin {
-  return async (config, input, working, output) => {
+function GetPlugin_External(host: AutoRestExtension, pluginName: string): PipelinePlugin {
+  return async (config, input, sink) => {
     const plugin = await host;
     const pluginNames = await plugin.GetPluginNames(config.CancellationToken);
     if (pluginNames.indexOf(pluginName) === -1) {
       throw new Error(`Plugin ${pluginName} not found.`);
     }
 
+    const results: DataHandle[] = [];
     const result = await plugin.Process(
       pluginName,
       key => config.GetEntry(key as any),
+      config,
       input,
-      output,
+      sink,
+      f => results.push(f),
       config.Message.bind(config),
       config.CancellationToken);
     if (!result) {
       throw new Error(`Plugin ${pluginName} reported failure.`);
     }
+    return new QuickDataSource(results);
   };
 }
-function CreateCommonmarkProcessor(): PipelinePlugin {
-  return async (config, input, working, output) => {
+function GetPlugin_CommonmarkProcessor(): PipelinePlugin {
+  return async (config, input, sink) => {
     const files = await input.Enum();
+    const results: DataHandle[] = [];
     for (let file of files) {
       const fileIn = await input.ReadStrict(file);
-      const fileOut = await ProcessCodeModel(fileIn, working);
+      const fileOut = await ProcessCodeModel(fileIn, sink);
       file = file.substr(file.indexOf("/output/") + "/output/".length);
-      await (await output.Write("./" + file + "/_code-model-v1")).Forward(fileOut);
+      results.push(await sink.Forward("code-model-v1", fileOut));
     }
+    return new QuickDataSource(results);
   };
 }
-function CreateArtifactEmitter(inputOverride?: () => Promise<DataStoreViewReadonly>): PipelinePlugin {
-  return async (config, input, working, output) => {
-    // clear output-folder if requested
-    if (config.GetEntry("can-clear-output-folder" as any) && config.GetEntry("clear-output-folder" as any)) {
-      await ClearFolder(config.OutputFolderUri);
+function GetPlugin_ArtifactEmitter(inputOverride?: () => Promise<DataSource>): PipelinePlugin {
+  return async (config, input, sink) => {
+    if (inputOverride) {
+      input = await inputOverride();
     }
+
+    // clear output-folder if requested
+    if (config.GetEntry("clear-output-folder" as any)) {
+      config.ClearFolder.Dispatch(config.OutputFolderUri);
+    }
+
     await EmitArtifacts(
       config,
-      config.GetEntry("input-artifact" as any),
+      config.GetEntry("input-artifact" as any) || null,
       key => ResolveUri(
         config.OutputFolderUri,
-        safeEval<string>(config.GetEntry("output-uri-expr" as any), { $key: key, $config: config.Raw })),
-      inputOverride ? await inputOverride() : input,
+        safeEval<string>(config.GetEntry("output-uri-expr" as any) || "$key", { $key: key, $config: config.Raw })),
+      input,
       config.GetEntry("is-object" as any));
+    return new QuickDataSource([]);
   };
 }
 
@@ -181,7 +218,7 @@ function BuildPipeline(config: ConfigurationView): { pipeline: { [name: string]:
 
     // derive information about given pipeline stage
     const plugin = cfg.plugin || stageName.split("/").reverse()[0];
-    const outputArtifact = cfg.outputArtifact;
+    const outputArtifact = cfg["output-artifact"];
     const scope = cfg.scope;
     const inputs: string[] = (!cfg.input ? [] : (Array.isArray(cfg.input) ? cfg.input : [cfg.input])).map((x: string) => resolvePipelineStageName(stageName, x));
 
@@ -244,75 +281,68 @@ function BuildPipeline(config: ConfigurationView): { pipeline: { [name: string]:
 }
 
 export async function RunPipeline(configView: ConfigurationView, fileSystem: IFileSystem): Promise<void> {
-
-  const pipeline = BuildPipeline(configView);
-  const fsInput = configView.DataStore.GetReadThroughScopeFileSystem(fileSystem);
-
-  // externals:
-  const oavPluginHost = new LazyPromise(async () => await AutoRestPlugin.FromModule(`${__dirname}/plugins/openapi-validation-tools`));
-  const aiPluginHost = new LazyPromise(async () => await AutoRestPlugin.FromModule(`${__dirname}/../../node_modules/autorest-interactive`));
-  const aoavPluginHost = new LazyPromise(async () => await AutoRestPlugin.FromModule(`${__dirname}/../../node_modules/@microsoft.azure/openapi-validator`));
-  const autoRestDotNet = new LazyPromise(async () => await GetAutoRestDotNetPlugin());
-
-  // TODO: enhance with custom declared plugins
+  // built-in plugins
   const plugins: { [name: string]: PipelinePlugin } = {
-    "loader": CreatePluginLoader(),
-    "md-override-loader": CreatePluginMdOverrideLoader(),
-    "transform": CreatePluginTransformer(),
-    "transform-immediate": CreatePluginTransformerImmediate(),
-    "compose": CreatePluginComposer(),
-    "model-validator": CreatePluginExternal(oavPluginHost, "model-validator"),
-    "semantic-validator": CreatePluginExternal(oavPluginHost, "semantic-validator"),
-    "azure-validator": CreatePluginExternal(autoRestDotNet, "azure-validator"),
-    "azure-openapi-validator": CreatePluginExternal(aoavPluginHost, "azure-openapi-validator"),
-    "modeler": CreatePluginExternal(autoRestDotNet, "modeler"),
+    "help": GetPlugin_Help(),
+    "identity": GetPlugin_Identity(),
+    "loader": GetPlugin_Loader(),
+    "md-override-loader": GetPlugin_MdOverrideLoader(),
+    "transform": GetPlugin_Transformer(),
+    "transform-immediate": GetPlugin_TransformerImmediate(),
+    "compose": GetPlugin_Composer(),
+    "schema-validator": GetPlugin_SchemaValidator(),
+    // TODO: replace with OAV again
+    "semantic-validator": GetPlugin_Identity(),
 
-    "csharp": CreatePluginExternal(autoRestDotNet, "csharp"),
-    "ruby": CreatePluginExternal(autoRestDotNet, "ruby"),
-    "nodejs": CreatePluginExternal(autoRestDotNet, "nodejs"),
-    "python": CreatePluginExternal(autoRestDotNet, "python"),
-    "go": CreatePluginExternal(autoRestDotNet, "go"),
-    "java": CreatePluginExternal(autoRestDotNet, "java"),
-    "azureresourceschema": CreatePluginExternal(autoRestDotNet, "azureresourceschema"),
-    "jsonrpcclient": CreatePluginExternal(autoRestDotNet, "jsonrpcclient"),
-    "csharp-simplifier": CreatePluginExternal(autoRestDotNet, "csharp-simplifier"),
-
-    "commonmarker": CreateCommonmarkProcessor(),
-    "emitter": CreateArtifactEmitter(),
-    "pipeline-emitter": CreateArtifactEmitter(async () => new QuickScope([await (await configView.DataStore.Write("pipeline")).WriteObject(pipeline.pipeline)])),
-    "autorest-interactive": async (
-      config: ConfigurationView,
-      input: DataStoreViewReadonly,
-      working: DataStoreView,
-      output: DataStoreView) => {
-      const startTime = Date.now();
-      await CreatePluginExternal(aiPluginHost, "autorest-interactive")(
-        config.GetNestedConfigurationImmediate({
-          __status: new Proxy<any>({}, {
-            async get(_, key) {
-              const expr = new Buffer(key.toString(), "base64").toString("ascii");
-              try {
-                return FastStringify(safeEval(expr, {
-                  pipeline: pipeline.pipeline,
-                  tasks: tasks,
-                  startTime: startTime,
-                  blame: (uri: string, position: any /*TODO: cleanup, nail type*/) => config.DataStore.Blame(uri, position)
-                }));
-              } catch (e) {
-                return "" + e;
-              }
-            }
-          })
-        }),
-        config.DataStore,
-        working,
-        output);
-    }
+    "openapi-document-converter": GetPlugin_OAI2toOAIx(),
+    "component-modifiers": GetPlugin_ComponentModifier(),
+    "yaml2jsonx": GetPlugin_Yaml2Jsonx(),
+    "jsonx2yaml": GetPlugin_Jsonx2Yaml(),
+    "reflect-api-versions-cs": GetPlugin_ReflectApiVersion(),
+    "commonmarker": GetPlugin_CommonmarkProcessor(),
+    "emitter": GetPlugin_ArtifactEmitter(),
+    "pipeline-emitter": GetPlugin_ArtifactEmitter(async () => new QuickDataSource([await configView.DataStore.getDataSink().WriteObject("pipeline", pipeline.pipeline, "pipeline")])),
+    "configuration-emitter": GetPlugin_ArtifactEmitter(async () => new QuickDataSource([await configView.DataStore.getDataSink().WriteObject("configuration", configView.Raw, "configuration")]))
   };
+
+  // dynamically loaded, auto-discovered plugins
+  const __extensionExtension: { [pluginName: string]: AutoRestExtension } = {};
+  for (const useExtensionQualifiedName of configView.GetEntry("used-extension" as any) || []) {
+    const extension = await GetExtension(useExtensionQualifiedName);
+    for (const plugin of await extension.GetPluginNames(configView.CancellationToken)) {
+      if (!plugins[plugin]) {
+        plugins[plugin] = GetPlugin_External(extension, plugin);
+        __extensionExtension[plugin] = extension;
+      }
+    }
+  }
+
+  // __status scope
+  const startTime = Date.now();
+  (configView.Raw as any).__status = new Proxy<any>({}, {
+    get(_, key) {
+      if (key === "__info") return false;
+      const expr = new Buffer(key.toString(), "base64").toString("ascii");
+      try {
+        return FastStringify(safeEval(expr, {
+          pipeline: pipeline.pipeline,
+          external: __extensionExtension,
+          tasks: tasks,
+          startTime: startTime,
+          blame: (uri: string, position: any /*TODO: cleanup, nail type*/) => configView.DataStore.Blame(uri, position)
+        }));
+      } catch (e) {
+        return "" + e;
+      }
+    }
+  });
 
   // TODO: think about adding "number of files in scope" kind of validation in between pipeline steps
 
-  const ScheduleNode: (nodeName: string) => Promise<DataStoreViewReadonly> =
+  const fsInput = configView.DataStore.GetReadThroughScope(fileSystem);
+  const pipeline = BuildPipeline(configView);
+
+  const ScheduleNode: (nodeName: string) => Promise<DataSource> =
     async (nodeName) => {
       const node = pipeline.pipeline[nodeName];
 
@@ -321,20 +351,20 @@ export async function RunPipeline(configView: ConfigurationView, fileSystem: IFi
       }
 
       // get input
-      let inputScopes: DataStoreViewReadonly[] = await Promise.all(node.inputs.map(getTask));
+      const inputScopes: DataSource[] = await Promise.all(node.inputs.map(getTask));
+      let inputScope: DataSource;
       if (inputScopes.length === 0) {
-        inputScopes = [fsInput];
+        inputScope = fsInput;
       } else {
-        const handles: DataHandleRead[] = [];
+        const handles: DataHandle[] = [];
         for (const pscope of inputScopes) {
           const scope = await pscope;
           for (const handle of await scope.Enum()) {
             handles.push(await scope.ReadStrict(handle));
           }
         }
-        inputScopes = [new QuickScope(handles)];
+        inputScope = new QuickDataSource(handles);
       }
-      const inputScope = inputScopes[0];
 
       const config = pipeline.configs[stringify(node.configScope)];
       const pluginName = node.pluginName;
@@ -345,16 +375,10 @@ export async function RunPipeline(configView: ConfigurationView, fileSystem: IFi
       try {
         config.Message({ Channel: Channel.Debug, Text: `${nodeName} - START` });
 
-        const scope = config.DataStore.CreateScope(nodeName);
-        const scopeWorking = scope.CreateScope("working");
-        const scopeOutput = scope.CreateScope("output");
-        await plugin(config,
-          inputScope,
-          scopeWorking,
-          scopeOutput);
+        const scopeResult = await plugin(config, inputScope, config.DataStore.getDataSink(node.outputArtifact));
 
         config.Message({ Channel: Channel.Debug, Text: `${nodeName} - END` });
-        return scopeOutput;
+        return scopeResult;
       } catch (e) {
         config.Message({ Channel: Channel.Fatal, Text: `${nodeName} - FAILED` });
         config.Message({ Channel: Channel.Fatal, Text: `${e}` });
@@ -363,7 +387,7 @@ export async function RunPipeline(configView: ConfigurationView, fileSystem: IFi
     };
 
   // schedule pipeline
-  const tasks: { [name: string]: Promise<DataStoreViewReadonly> } = {};
+  const tasks: { [name: string]: Promise<DataSource> } = {};
   const getTask = (name: string) => name in tasks ?
     tasks[name] :
     tasks[name] = ScheduleNode(name);
@@ -371,9 +395,10 @@ export async function RunPipeline(configView: ConfigurationView, fileSystem: IFi
   // execute pipeline
   const barrier = new OutstandingTaskAwaiter();
   const barrierRobust = new OutstandingTaskAwaiter();
+
   for (const name of Object.keys(pipeline.pipeline)) {
     const task = getTask(name);
-    const taskx: { _state: "running" | "failed" | "complete", _result: () => DataHandleRead[], _finishedAt: number } = task as any;
+    const taskx: { _state: "running" | "failed" | "complete", _result: () => DataHandle[], _finishedAt: number } = task as any;
     taskx._state = "running";
     task.then(async x => {
       const res = await Promise.all((await x.Enum()).map(key => x.ReadStrict(key)));
@@ -382,14 +407,18 @@ export async function RunPipeline(configView: ConfigurationView, fileSystem: IFi
       taskx._finishedAt = Date.now();
     }).catch(() => taskx._state = "failed");
     barrier.Await(task);
-    barrierRobust.Await(task.catch(() => null));
+    barrierRobust.Await(task.catch(() => { }));
   }
 
   try {
     await barrier.Wait();
   } catch (e) {
     // wait for outstanding nodes
-    await barrierRobust.Wait();
+    try {
+      await barrierRobust.Wait();
+    } catch {
+      // wait for others to fail or whatever...
+    }
     throw e;
   }
 }

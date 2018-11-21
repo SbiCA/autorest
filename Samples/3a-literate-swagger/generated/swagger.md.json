@@ -332,9 +332,7 @@
           "type": "string"
         },
         "details": {
-          "schema": {
-            "$ref": "#/definitions/ErrorDetails"
-          }
+          "$ref": "#/definitions/ErrorDetails"
         }
       }
     },

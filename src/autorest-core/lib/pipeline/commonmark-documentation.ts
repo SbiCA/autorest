@@ -15,13 +15,24 @@ import {
   ParseNode,
   StringifyAst,
   YAMLMap,
-  YAMLMapping
-} from "../ref/yaml";
+  YAMLMapping,
+  YAMLNodeWithPath,
+} from '../ref/yaml';
 import { IdentitySourceMapping } from "../source-map/merging";
 import { From } from "../ref/linq";
-import { DataHandleRead, DataHandleWrite, DataStoreView } from "../data-store/data-store";
+import { DataHandle, DataSink } from '../data-store/data-store';
 
-function IsDocumentationField(path: JsonPath) {
+function IsDocumentationField(node: YAMLNodeWithPath) {
+  if (!node || !node.node.value || !node.node.value.value || typeof node.node.value.value !== "string") {
+    return false;
+  }
+  const path = node.path;
+  if (path.length < 2) {
+    return false;
+  }
+  if (path[path.length - 2] === "x-ms-examples") {
+    return false;
+  }
   const last = path[path.length - 1];
   return last === "Description" || last === "Summary";
 }
@@ -44,7 +55,7 @@ export function PlainTextVersion(commonmarkAst: Node): string {
   return result.trim();
 }
 
-export async function ProcessCodeModel(codeModel: DataHandleRead, scope: DataStoreView): Promise<DataHandleRead> {
+export async function ProcessCodeModel(codeModel: DataHandle, sink: DataSink): Promise<DataHandle> {
   const ast = CloneAst(codeModel.ReadYamlAst());
   let mapping = IdentitySourceMapping(codeModel.key, ast);
 
@@ -52,7 +63,7 @@ export async function ProcessCodeModel(codeModel: DataHandleRead, scope: DataSto
 
   // transform
   for (const d of Descendants(ast, [], true)) {
-    if (d.node.kind === Kind.MAPPING && IsDocumentationField(d.path)) {
+    if (d.node.kind === Kind.MAPPING && IsDocumentationField(d)) {
       const node = d.node as YAMLMapping;
       const rawMarkdown = node.value.value;
 
@@ -77,6 +88,5 @@ export async function ProcessCodeModel(codeModel: DataHandleRead, scope: DataSto
     }
   }
 
-  const targetHandle = await scope.Write("codeModel.yaml");
-  return await targetHandle.WriteData(StringifyAst(ast), mapping, [codeModel]);
+  return await sink.WriteData("codeModel.yaml", StringifyAst(ast), undefined, mapping, [codeModel]);
 }

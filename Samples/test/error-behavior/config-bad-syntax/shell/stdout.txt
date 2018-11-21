@@ -1,3 +1,2 @@
-   at ...
-{ Error: Error occurred. Exiting.
-Error occurred. Exiting.
+[OperationAbortedException] Error occurred. Exiting.
+https://aka.ms/autorest

@@ -6,3 +6,6 @@ tsconfig.json
 bin
 *.tgz
 test/**
+static_modules/
+!/preinstall-check.js 
+!/post-install.js 

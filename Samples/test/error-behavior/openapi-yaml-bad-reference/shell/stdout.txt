@@ -1,1 +1,2 @@
-Process() Cancelled due to exception : Plugin modeler reported failure.
+https://aka.ms/autorest
+Process() cancelled due to exception : Could not resolve reference #/definitions/Cowball

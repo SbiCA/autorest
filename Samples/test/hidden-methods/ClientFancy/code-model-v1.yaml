@@ -1,106 +1,143 @@
 ---
+$id: '1'
 modelTypes:
-  - $id: '1'
-    $type: 'AutoRest.Core.Model.CompositeType, AutoRest.Core'
-    $actualType: AutoRest.Core.Model.CompositeType
+  - $id: '2'
+    $type: CompositeType
     properties:
-      - $id: '2'
-        $actualType: AutoRest.Core.Model.Property
+      - $id: '3'
         isReadOnly: false
-        isPolymorphicDiscriminator: false
         realPath:
           - id
-        realXmlPath:
-          - id
         collectionFormat: none
+        defaultValue:
+          $id: '4'
+          fixed: false
+          raw: '42'
+        deprecated: false
+        documentation:
+          $id: '5'
+          fixed: false
         isRequired: false
         isConstant: false
-        modelTypeName: Long
+        name:
+          $id: '6'
+          fixed: false
+          raw: id
+        serializedName: id
         modelType:
-          $id: '3'
-          $type: 'AutoRest.Core.Model.PrimaryType, AutoRest.Core'
-          $actualType: AutoRest.Core.Model.PrimaryType
+          $id: '7'
+          $type: PrimaryType
           format: int64
-          knownFormat: int64
           knownPrimaryType: long
-          className: Long
-          declarationName: Long
-          '#name': Long
-        '#defaultValue': '42'
-        '#name': id
-        '#serializedName': id
-      - $id: '4'
-        $actualType: AutoRest.Core.Model.Property
+          name:
+            $id: '8'
+            fixed: false
+            raw: Long
+          deprecated: false
+      - $id: '9'
         isReadOnly: false
-        isPolymorphicDiscriminator: false
         realPath:
           - name
-        realXmlPath:
-          - name
         collectionFormat: none
+        defaultValue:
+          $id: '10'
+          fixed: false
+          raw: shiny
+        deprecated: false
+        documentation:
+          $id: '11'
+          fixed: false
         isRequired: true
         isConstant: false
-        modelTypeName: String
+        name:
+          $id: '12'
+          fixed: false
+          raw: name
+        serializedName: name
         modelType:
-          $id: '5'
-          $type: 'AutoRest.Core.Model.PrimaryType, AutoRest.Core'
-          $actualType: AutoRest.Core.Model.PrimaryType
-          knownFormat: none
+          $id: '13'
+          $type: PrimaryType
           knownPrimaryType: string
-          className: String
-          declarationName: String
-          '#name': String
-        '#defaultValue': shiny
-        '#name': name
-        '#serializedName': name
+          name:
+            $id: '14'
+            fixed: false
+            raw: String
+          deprecated: false
+    serializedName: Cowbell
     documentation: A cowbell.
     containsConstantProperties: false
-    className: Cowbell
-    declarationName: Cowbell
-    '#serializedName': Cowbell
-    '#name': Cowbell
+    name:
+      $id: '15'
+      fixed: false
+      raw: Cowbell
+    deprecated: false
+name: CowbellFactory
 namespace: ''
 modelsName: Models
 apiVersion: 1.0.0
 baseUrl: 'https://localhost'
-methodGroupNames:
-  - Cowbell
 documentation: This is a sample.
 operations:
-  - methods:
-      - parameters:
-          - $id: '6'
-            isClientProperty: false
+  - $id: '16'
+    methods:
+      - $id: '17'
+        parameters:
+          - $id: '18'
             location: body
             collectionFormat: none
+            defaultValue:
+              $id: '19'
+              fixed: false
+            deprecated: false
+            documentation:
+              $id: '20'
+              fixed: false
+            extensions:
+              x-ms-requestBody-name: body
             isRequired: true
             isConstant: false
-            modelTypeName: Cowbell
+            name:
+              $id: '21'
+              fixed: false
+              raw: body
+            serializedName: body
             modelType:
-              $ref: '1'
-            '#name': body
-            '#serializedName': body
+              $ref: '2'
+        name:
+          $id: '22'
+          fixed: false
+          raw: Add
+        group:
+          $id: '23'
+          fixed: false
+          raw: Cowbell
+        serializedName: Cowbell_Add
+        url: /cowbell
         isAbsoluteUrl: false
         httpMethod: post
         responses:
           OK:
+            $id: '24'
             isNullable: true
         defaultResponse:
+          $id: '25'
           isNullable: true
         returnType:
+          $id: '26'
           isNullable: true
         description: A good description.
         requestContentType: application/json; charset=utf-8
         responseContentTypes:
           - application/json
+        extensions:
+          x-ms-requestBody-index: '0'
         deprecated: false
         hidden: true
-        '#name': Add
-        '#group': Cowbell
-        '#serializedName': Cowbell_Add
-        '#url': /cowbell
-    isCodeModelMethodGroup: false
-    usings:
-      - Models
-    '#name': Cowbell
-'#name': CowbellFactory
+    name:
+      $id: '27'
+      fixed: false
+      raw: Cowbell
+    typeName:
+      $id: '28'
+      fixed: false
+    nameForProperty: Cowbell

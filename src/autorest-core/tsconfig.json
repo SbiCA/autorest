@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "outDir": "dist",
     "alwaysStrict": true,
     "forceConsistentCasingInFileNames": false,
     "module": "commonjs",
@@ -11,20 +12,26 @@
     "strict": true,
     "declaration": true,
     "stripInternal": true,
-    "noEmitHelpers": true,
-    "target": "es2016",
+    "target": "es2017",
     "types": [
-      "node"
+      "node",
+      "mocha"
     ],
     "lib": [
-      "dom",
-      "es2016",
       "esnext"
     ],
     "experimentalDecorators": true,
-    "newLine": "LF"
+    "newLine": "LF",
+    "plugins": [
+      {
+        "name": "tslint-language-service",
+        "configFile": "../../tslint.json"
+      }
+    ]
   },
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "static_modules",
+    "dist"
   ]
 }

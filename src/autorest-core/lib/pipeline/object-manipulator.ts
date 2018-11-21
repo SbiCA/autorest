@@ -4,41 +4,33 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IdentitySourceMapping } from "../source-map/merging";
-import { Clone, CloneAst, Descendants, StringifyAst, ToAst, YAMLNode } from "../ref/yaml";
+import { Clone, CloneAst, Descendants, ParseNode, StringifyAst, ToAst, YAMLNode } from "../ref/yaml";
 import { ReplaceNode, ResolveRelativeNode } from "../parsing/yaml";
-import { DataHandleRead, DataHandleWrite } from "../data-store/data-store";
+import { DataHandle, DataSink } from "../data-store/data-store";
 import { IsPrefix, JsonPath, nodes, paths, stringify } from "../ref/jsonpath";
 import { Mapping, SmartPosition } from "../ref/source-map";
 import { From } from "../ref/linq";
 
 export async function ManipulateObject(
-  src: DataHandleRead,
-  target: DataHandleWrite,
+  src: DataHandle,
+  target: DataSink,
   whereJsonQuery: string,
   transformer: (doc: any, obj: any, path: JsonPath) => any, // transforming to `undefined` results in removal
   mappingInfo?: {
-    transformerSourceHandle: DataHandleRead,
+    transformerSourceHandle: DataHandle,
     transformerSourcePosition: SmartPosition,
     reason: string
-  }): Promise<{ anyHit: boolean, result: DataHandleRead }> {
+  }): Promise<{ anyHit: boolean, result: DataHandle }> {
 
   // find paths matched by `whereJsonQuery`
-  const doc = src.ReadObject<any>();
-  const allHits = nodes(doc, whereJsonQuery).sort((a, b) => a.path.length - b.path.length);
-  if (allHits.length === 0) {
+  let ast: YAMLNode = CloneAst(src.ReadYamlAst());
+  const doc = ParseNode<any>(ast);
+  const hits = nodes(doc, whereJsonQuery).sort((a, b) => a.path.length - b.path.length);
+  if (hits.length === 0) {
     return { anyHit: false, result: src };
   }
 
-  // filter out sub-hits (only consider highest hit)
-  const hits: { path: JsonPath, value: any }[] = [];
-  for (const hit of allHits) {
-    if (hits.every(existingHit => !IsPrefix(existingHit.path, hit.path))) {
-      hits.push(hit);
-    }
-  }
-
   // process
-  let ast: YAMLNode = CloneAst(src.ReadYamlAst());
   const mapping = IdentitySourceMapping(src.key, ast).filter(m => !hits.some(hit => IsPrefix(hit.path, (m.generated as any).path)));
   for (const hit of hits) {
     if (ast === undefined) {
@@ -56,7 +48,7 @@ export async function ManipulateObject(
       const reasonSuffix = mappingInfo ? ` (${mappingInfo.reason})` : "";
       if (mappingInfo) {
         mapping.push(
-          ...From(Descendants(newAst)).Select(descendant => {
+          ...From(Descendants(newAst)).Select((descendant: any) => {
             return <Mapping>{
               name: `Injected object at '${stringify(hit.path)}'${reasonSuffix}`,
               source: mappingInfo.transformerSourceHandle.key,
@@ -69,8 +61,8 @@ export async function ManipulateObject(
       // try to be smart and assume that nodes existing in both old and new AST have a relationship
       mapping.push(
         ...From(Descendants(newAst))
-          .Where(descendant => paths(doc, stringify(hit.path.concat(descendant.path))).length === 1)
-          .Select(descendant => {
+          .Where((descendant: any) => paths(doc, stringify(hit.path.concat(descendant.path))).length === 1)
+          .Select((descendant: any) => {
             return <Mapping>{
               name: `Original object at '${stringify(hit.path)}'${reasonSuffix}`,
               source: src.key,
@@ -82,7 +74,7 @@ export async function ManipulateObject(
   }
 
   // write back
-  const resultHandle = await target.WriteData(StringifyAst(ast), mapping, mappingInfo ? [src, mappingInfo.transformerSourceHandle] : [src]);
+  const resultHandle = await target.WriteData("manipulated", StringifyAst(ast), undefined, mapping, mappingInfo ? [src, mappingInfo.transformerSourceHandle] : [src]);
   return {
     anyHit: true,
     result: resultHandle

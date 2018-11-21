@@ -3,6 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// TODO: the following is only required because safeDump of "yaml-ast-parser" has this bug: https://github.com/mulesoft-labs/yaml-ast-parser/issues/30
+// PLEASE: remove the entire dependency to js-yaml once that is fixed!
+const { safeDump } = require("js-yaml");
+
 import * as yamlAst from "yaml-ast-parser";
 import { JsonPath } from "./jsonpath";
 import { NewEmptyObject } from "../parsing/stable-object";
@@ -19,6 +23,8 @@ export type YAMLMap = yamlAst.YamlMap;
 export type YAMLSequence = yamlAst.YAMLSequence;
 export type YAMLAnchorReference = yamlAst.YAMLAnchorReference;
 
+export const CreateYAMLAnchorRef: (key: string) => YAMLMap = yamlAst.newAnchorRef as any;
+export const CreateYAMLMap: () => YAMLMap = yamlAst.newMap;
 export const CreateYAMLMapping: (key: YAMLScalar, value: YAMLNode) => YAMLMapping = yamlAst.newMapping;
 export const CreateYAMLScalar: (value: string) => YAMLScalar = yamlAst.newScalar;
 
@@ -31,7 +37,7 @@ export interface YAMLNodeWithPath {
  * Parsing
 */
 export function ParseToAst(rawYaml: string): YAMLNode {
-  return yamlAst.safeLoad(rawYaml, null) as YAMLNode;
+  return yamlAst.safeLoad(rawYaml) as YAMLNode;
 }
 
 export function* Descendants(yamlAstNode: YAMLNode, currentPath: JsonPath = [], deferResolvingMappings: boolean = false): Iterable<YAMLNodeWithPath> {
@@ -89,12 +95,13 @@ export function ResolveAnchorRef(yamlAstRoot: YAMLNode, anchorRef: string): YAML
 /**
  * Populates yamlNode.valueFunc with a function that creates a *mutable* object (i.e. no caching of the reference or such)
  */
-function ParseNodeInternal(yamlRootNode: YAMLNode, yamlNode: YAMLNode, onError: (message: string, index: number) => void): () => any {
+function ParseNodeInternal(yamlRootNode: YAMLNode, yamlNode: YAMLNode, onError: (message: string, index: number) => void): (cache: WeakMap<YAMLNode, any>) => any {
   if (!yamlNode) {
     return () => null;
   }
-  if (yamlNode.errors.length > 0) {
-    for (const error of yamlNode.errors) {
+  const errors = yamlNode.errors.filter(_ => !_.isWarning);
+  if (errors.length > 0) {
+    for (const error of errors) {
       onError(`Syntax error: ${error.reason}`, error.mark.position);
     }
     return (yamlNode as any).valueFunc = () => null;
@@ -103,40 +110,57 @@ function ParseNodeInternal(yamlRootNode: YAMLNode, yamlNode: YAMLNode, onError: 
     return (yamlNode as any).valueFunc;
   }
 
+  // important for anchors!
+  const memoize = (factory: (cache: WeakMap<YAMLNode, any>, set: (o: any) => void) => any): ((cache: WeakMap<YAMLNode, any>) => any) =>
+    cache => {
+      if (cache.has(yamlNode)) return cache.get(yamlNode);
+      const result = factory(cache, o => cache.set(yamlNode, o));
+      cache.set(yamlNode, result);
+      return result;
+    };
+
   switch (yamlNode.kind) {
     case Kind.SCALAR: {
       const yamlNodeScalar = yamlNode as YAMLScalar;
       return (yamlNode as any).valueFunc = yamlNodeScalar.valueObject !== undefined
-        ? () => yamlNodeScalar.valueObject
-        : () => yamlNodeScalar.value;
+        ? memoize(() => yamlNodeScalar.valueObject)
+        : memoize(() => yamlNodeScalar.value);
     }
     case Kind.MAPPING:
       onError("Syntax error: Encountered bare mapping.", yamlNode.startPosition);
       return (yamlNode as any).valueFunc = () => null;
     case Kind.MAP: {
       const yamlNodeMapping = yamlNode as YAMLMap;
-      return (yamlNode as any).valueFunc = () => {
+      return (yamlNode as any).valueFunc = memoize((cache, set) => {
         const result = NewEmptyObject();
+        set(result);
         for (const mapping of yamlNodeMapping.mappings) {
           if (mapping.key.kind !== Kind.SCALAR) {
             onError("Syntax error: Only scalar keys are allowed as mapping keys.", mapping.key.startPosition);
           } else if (mapping.value === null) {
             onError("Syntax error: No mapping value found.", mapping.key.endPosition);
           } else {
-            result[mapping.key.value] = ParseNodeInternal(yamlRootNode, mapping.value, onError)();
+            result[mapping.key.value] = ParseNodeInternal(yamlRootNode, mapping.value, onError)(cache);
           }
         }
         return result;
-      };
+      });
     }
     case Kind.SEQ: {
       const yamlNodeSequence = yamlNode as YAMLSequence;
-      return (yamlNode as any).valueFunc = () =>
-        yamlNodeSequence.items.map(item => ParseNodeInternal(yamlRootNode, item, onError)());
+      return (yamlNode as any).valueFunc = memoize((cache, set) => {
+        const result: any[] = [];
+        set(result);
+        for (const item of yamlNodeSequence.items) {
+          result.push(ParseNodeInternal(yamlRootNode, item, onError)(cache));
+        }
+        return result;
+      });
     }
     case Kind.ANCHOR_REF: {
       const yamlNodeRef = yamlNode as YAMLAnchorReference;
-      return (ResolveAnchorRef(yamlRootNode, yamlNodeRef.referencesAnchor).node as any).valueFunc;
+      const ref = ResolveAnchorRef(yamlRootNode, yamlNodeRef.referencesAnchor).node;
+      return memoize(cache => ParseNodeInternal(yamlRootNode, ref, onError)(cache));
     }
     case Kind.INCLUDE_REF:
       onError("Syntax error: INCLUDE_REF not implemented.", yamlNode.startPosition);
@@ -148,7 +172,10 @@ function ParseNodeInternal(yamlRootNode: YAMLNode, yamlNode: YAMLNode, onError: 
 
 export function ParseNode<T>(yamlNode: YAMLNode, onError: (message: string, index: number) => void = message => { throw new Error(message); }): T {
   ParseNodeInternal(yamlNode, yamlNode, onError);
-  return (yamlNode as any).valueFunc();
+  if (!yamlNode) {
+    return (undefined) as any;
+  }
+  return (yamlNode as any).valueFunc(new WeakMap());
 }
 
 export function CloneAst<T extends YAMLNode>(ast: T): T {
@@ -162,7 +189,36 @@ export function StringifyAst(ast: YAMLNode): string {
   return FastStringify(ParseNode<any>(ast));
 }
 export function Clone<T>(object: T): T {
+  if (object === undefined) return object;
   return Parse<T>(FastStringify(object));
+}
+
+/**
+ * Normalizes the order of given object's keys (sorts recursively)
+ */
+export function Normalize<T>(object: T): T {
+  const seen = new WeakSet();
+  const clone = Clone<T>(object);
+  const norm = (o: any) => {
+    if (Array.isArray(o)) {
+      o.forEach(norm);
+    } else if (o && typeof o == "object") {
+      if (seen.has(o)) {
+        return;
+      }
+      seen.add(o);
+      const keys = Object.keys(o).sort();
+      const oo = { ...o };
+      for (const k of keys) {
+        delete o[k];
+      }
+      for (const k of keys) {
+        norm(o[k] = oo[k]);
+      }
+    }
+  };
+  norm(clone);
+  return clone;
 }
 export function ToAst<T>(object: T): YAMLNode {
   return ParseToAst(FastStringify(object));
@@ -175,13 +231,41 @@ export function Parse<T>(rawYaml: string, onError: (message: string, index: numb
 }
 
 export function Stringify<T>(object: T): string {
-  return "---\n" + yamlAst.safeDump(object, { skipInvalid: true });
+  return "---\n" + safeDump(object, { skipInvalid: true });
 }
 
 export function FastStringify<T>(obj: T): string {
-  try {
-    return JSON.stringify(obj, null, 1);
-  } catch (e) {
-    return Stringify(obj);
+  // has duplicate objects?
+  const seen = new WeakSet();
+  const losslessJsonSerializable = (o: any): boolean => {
+    if (o && typeof o == "object") {
+      if (seen.has(o)) return false;
+      seen.add(o);
+    }
+    if (Array.isArray(o)) {
+      return o.every(losslessJsonSerializable);
+    } else if (o && typeof o == "object") {
+      return Object.values(o).every(losslessJsonSerializable);
+    }
+    return true;
+  };
+  if (losslessJsonSerializable(obj)) {
+    try { return JSON.stringify(obj, null, 1); } catch { }
   }
+  return Stringify(obj);
+}
+
+export function StrictJsonSyntaxCheck(json: string): { message: string, index: number } | null {
+  try {
+    // quick check on data.
+    JSON.parse(json);
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      const message = "" + e.message;
+      try {
+        return { message: message.substring(0, message.lastIndexOf("at")).trim(), index: parseInt(e.message.substring(e.message.lastIndexOf(" ")).trim()) };
+      } catch { }
+    }
+  }
+  return null;
 }

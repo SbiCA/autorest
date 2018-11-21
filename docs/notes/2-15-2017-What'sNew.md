@@ -2,19 +2,19 @@ As we mentioned, we've migrated our build system to the latest dotnet-cli build 
 
 It took several weeks of effort to make this possible, and during this time we were constantly trying to keep in sync with the master branch. 
 
-It is remotely possible there are some regressions or glitches, if you find something that isn’t right, ping @fearthecowboy or @olydis asap, and we can look into it.
+It is remotely possible there are some regressions or glitches, if you find something that isn’t right, ping @fearthecowboy asap, and we can look into it.
 
 
 The nuget nightly builds are no longer being built, and they won’t be coming back (although, the existing builds will remain in perpetuity)
 
-Going forward, we’re going to be publishing a tool in npm and you’ll need nodejs (6.9.5 or later) to use AutoRest .
+Going forward, we’re going to be publishing a tool in npm and you’ll need nodejs (7.10.0 or later) to use AutoRest .
 
 This drastically simplifies installation across the board, and we’re supporting AutoRest on Windows, MacOS and Linux (many flavors)
 
 By Friday, 2/17/2017 - you will be able to install AutoRest via npm:
 
 ``` powershell 
-# make sure you have node 6.9.5 or greater installed!
+# make sure you have node 7.10.0 or greater installed!
 npm install -g AutoRest
 ```
 

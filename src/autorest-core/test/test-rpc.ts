@@ -1,13 +1,9 @@
-// polyfills for language support 
-require("../lib/polyfill.min.js");
-
 import * as cp from 'child_process';
 import * as rpc from 'vscode-jsonrpc';
 import { suite, test, slow, timeout, skip, only } from "mocha-typescript";
 
-
 async function connect() {
-  let childProcess = cp.spawn("dotnet", [`${__dirname}/../../core/AutoRest/bin/Debug/netcoreapp1.0/AutoRest.dll`, "--server"]);
+  let childProcess = cp.spawn("dotnet", [`${__dirname}/../../../core/AutoRest/bin/netcoreapp1.0/AutoRest.dll`, "--server"]);
 
   // Use stdin and stdout for communication:
   let connection = rpc.createMessageConnection(
@@ -31,7 +27,7 @@ async function connect() {
     return `You asked for the value ${key} in the session ${sessionId}`;
   });
 
-  connection.onRequest(new rpc.RequestType1<string, Array<string>, void, void>('ListInputs'), (sessionId: string) => {
+  connection.onRequest(new rpc.RequestType2<string,string|undefined, Array<string>, void, void>('ListInputs'), (sessionId: string) => {
     return ["a.txt", "b.txt"];
   });
 
@@ -66,7 +62,7 @@ async function connect() {
 }
 
 @suite class TestConnectivity {
-  @test @timeout(10000) async "E2E"() {
+  @test @skip async "E2E"() {
     await connect();
   }
 }
